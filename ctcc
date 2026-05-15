@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""
+CTCC — Computer to Computer Communication
+One room. Local network. No internet required.
+
+Usage:
+  ctcc run          — open a room (you are host)
+  ctcc join <IP>    — join someone's room
+"""
+
+import socket
+import threading
+import sys
+import os
+import hashlib
+from datetime import datetime
+
+# ── config ────────────────────────────────────────────────────
+PORT        = 5050
+BUFFER      = 4096
+PW_HASH     = "0fe01a211ae14008fd9bccac52a0317011d5af4f2331d0cdbe30d7e61a45f79c"
+
+# ── colours ──────────────────────────────────────────────────
+R   = '\033[1;31m'
+Y   = '\033[1;33m'
+G   = '\033[1;32m'
+C   = '\033[1;36m'
+W   = '\033[1;37m'
+DIM = '\033[2m'
+RST = '\033[0m'
+
+LOGO = f"""
+{R} ██████╗{Y}████████╗{G} ██████╗{C} ██████╗{RST}
+{R}██╔════╝{Y}╚══██╔══╝{G}██╔════╝{C}██╔════╝{RST}
+{R}██║     {Y}   ██║   {G}██║     {C}██║     {RST}
+{R}██║     {Y}   ██║   {G}██║     {C}██║     {RST}
+{R}╚██████╗{Y}   ██║   {G}╚██████╗{C}╚██████╗{RST}
+{R} ╚═════╝{Y}   ╚═╝   {G} ╚═════╝{C} ╚═════╝{RST}
+{DIM}   Computer to Computer Communication{RST}
+"""
+
+# ── helpers ──────────────────────────────────────────────────
+def ts():
+    return datetime.now().strftime('%H:%M:%S')
+
+def clear():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def hash_pw(pw):
+    return hashlib.sha256(pw.encode()).hexdigest()
+
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        return s.getsockname()[0]
+    except Exception:
+        return '127.0.0.1'
+    finally:
+        s.close()
+
+def sys_print(text, name=None):
+    print(f"\r{DIM}[{ts()}]{RST} {Y}** {text} **{RST}")
+    if name:
+        reprint_prompt(name)
+
+def chat_print(sender, text, color, my_name):
+    print(f"\r{DIM}[{ts()}]{RST} {color}{sender}{RST}: {text}")
+    reprint_prompt(my_name)
+
+def reprint_prompt(name):
+    print(f"{C}{name}{RST} > ", end='', flush=True)
+
+# ═══════════════════════════════════════════════════════════════
+#   HOST
+# ═══════════════════════════════════════════════════════════════
+
+clients      = {}   # sock -> name
+clients_lock = threading.Lock()
+
+def broadcast(msg, exclude=None):
+    with clients_lock:
+        for sock in list(clients):
+            if sock is exclude:
+                continue
+            try:
+                sock.sendall(msg.encode())
+            except Exception:
+                pass
+
+def kick(sock):
+    with clients_lock:
+        name = clients.pop(sock, 'unknown')
+    try:
+        sock.close()
+    except Exception:
+        pass
+    return name
+
+def handle_client(conn, addr, host_name):
+    # ── auth handshake ──
+    try:
+        conn.sendall(b"PW?")
+        pw = conn.recv(BUFFER).decode().strip()
+        if hash_pw(pw) != PW_HASH:
+            conn.sendall(b"DENIED")
+            conn.close()
+            sys_print(f"Rejected connection from {addr[0]} — wrong password", host_name)
+            return
+        conn.sendall(b"OK")
+
+        # ── get name ──
+        raw = conn.recv(BUFFER).decode().strip()
+        if not raw.startswith("NAME:"):
+            conn.close()
+            return
+        name = raw[5:].strip() or addr[0]
+    except Exception:
+        conn.close()
+        return
+
+    with clients_lock:
+        clients[conn] = name
+
+    sys_print(f"{name} joined the room", host_name)
+    broadcast(f"SYS:{name} joined the room.", exclude=conn)
+
+    # ── receive loop ──
+    while True:
+        try:
+            data = conn.recv(BUFFER)
+            if not data:
+                break
+            text = data.decode().strip()
+
+            # host kick command
+            if text.startswith("/kick "):
+                # only broadcast; actual kick handled in host send loop
+                pass
+
+            broadcast(f"MSG:{name}:{text}", exclude=conn)
+            chat_print(name, text, G, host_name)
+        except Exception:
+            break
+
+    left = kick(conn)
+    sys_print(f"{left} left the room", host_name)
+    broadcast(f"SYS:{left} left the room.")
+
+def host_send_loop(my_name):
+    reprint_prompt(my_name)
+    while True:
+        try:
+            msg = input()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{Y}** Room closed. **{RST}")
+            os._exit(0)
+
+        if not msg.strip():
+            reprint_prompt(my_name)
+            continue
+
+        # /kick <name>
+        if msg.startswith("/kick "):
+            target = msg[6:].strip()
+            with clients_lock:
+                found = {s: n for s, n in clients.items() if n == target}
+            if found:
+                for s in found:
+                    s.sendall(b"KICKED")
+                    kick(s)
+                sys_print(f"Kicked {target}", my_name)
+                broadcast(f"SYS:{target} was kicked by the host.")
+            else:
+                sys_print(f"No user named '{target}'", my_name)
+            continue
+
+        # /list
+        if msg.strip() == "/list":
+            with clients_lock:
+                names = list(clients.values())
+            sys_print("In room: " + (", ".join(names) if names else "nobody"), my_name)
+            continue
+
+        if msg.strip() in ("/quit", "/q"):
+            broadcast("SYS:Host closed the room.")
+            print(f"{Y}** Room closed. **{RST}")
+            os._exit(0)
+
+        broadcast(f"MSG:{my_name}:{msg}")
+        print(f"\033[1A\r{DIM}[{ts()}]{RST} {C}{my_name}{RST}: {msg}")
+        reprint_prompt(my_name)
+
+def run_host():
+    clear()
+    print(LOGO)
+
+    my_name = input(f"Your name {DIM}(host){RST}: ").strip() or socket.gethostname()
+    print()
+
+    ip = get_local_ip()
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(('', PORT))
+    srv.listen(20)
+
+    print(f"{G}** Room open on {W}{ip}:{PORT}{RST}")
+    print(f"{DIM}   Others join with:{RST}  {Y}ctcc join {ip}{RST}")
+    print(f"{DIM}   Commands: /kick <name>  /list  /quit{RST}\n")
+
+    def accept_loop():
+        while True:
+            try:
+                conn, addr = srv.accept()
+                t = threading.Thread(target=handle_client,
+                                     args=(conn, addr, my_name), daemon=True)
+                t.start()
+            except Exception:
+                break
+
+    threading.Thread(target=accept_loop, daemon=True).start()
+    host_send_loop(my_name)
+
+# ═══════════════════════════════════════════════════════════════
+#   CLIENT
+# ═══════════════════════════════════════════════════════════════
+
+def client_recv_loop(sock, my_name):
+    while True:
+        try:
+            data = sock.recv(BUFFER)
+            if not data:
+                sys_print("Connection closed.", my_name)
+                os._exit(0)
+            text = data.decode().strip()
+
+            if text == "KICKED":
+                print(f"\r{R}** You were kicked by the host. **{RST}")
+                os._exit(0)
+            elif text.startswith("SYS:"):
+                sys_print(text[4:], my_name)
+            elif text.startswith("MSG:"):
+                parts = text[4:].split(":", 1)
+                sender = parts[0] if len(parts) == 2 else "?"
+                body   = parts[1] if len(parts) == 2 else text
+                chat_print(sender, body, G, my_name)
+        except Exception:
+            sys_print("Lost connection.", my_name)
+            os._exit(0)
+
+def client_send_loop(sock, my_name):
+    reprint_prompt(my_name)
+    while True:
+        try:
+            msg = input()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{Y}** Disconnected. **{RST}")
+            sock.close()
+            sys.exit(0)
+
+        if not msg.strip():
+            reprint_prompt(my_name)
+            continue
+
+        if msg.strip() in ("/quit", "/q"):
+            print(f"{Y}** Disconnected. **{RST}")
+            sock.close()
+            sys.exit(0)
+
+        try:
+            sock.sendall(msg.encode())
+        except Exception:
+            print(f"{R}** Send failed. **{RST}")
+            sys.exit(1)
+
+        print(f"\033[1A\r{DIM}[{ts()}]{RST} {C}{my_name}{RST}: {msg}")
+        reprint_prompt(my_name)
+
+def run_join(host_ip):
+    clear()
+    print(LOGO)
+
+    my_name = input("Your name: ").strip() or socket.gethostname()
+    print()
+
+    print(f"{C}** Connecting to {host_ip}:{PORT}... **{RST}")
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.connect((host_ip, PORT))
+    except ConnectionRefusedError:
+        print(f"{R}** Could not connect. Is the host running? **{RST}")
+        sys.exit(1)
+
+    # ── auth ──
+    challenge = sock.recv(BUFFER)
+    if challenge != b"PW?":
+        print(f"{R}** Unexpected response from host. **{RST}")
+        sys.exit(1)
+
+    import getpass
+    pw = getpass.getpass("Room password: ")
+    sock.sendall(pw.encode())
+
+    resp = sock.recv(BUFFER)
+    if resp == b"DENIED":
+        print(f"{R}** Wrong password. **{RST}")
+        sys.exit(1)
+
+    # ── send name ──
+    sock.sendall(f"NAME:{my_name}".encode())
+
+    print(f"{G}** Joined! Type messages below. /quit to leave. **{RST}\n")
+
+    threading.Thread(target=client_recv_loop, args=(sock, my_name), daemon=True).start()
+    client_send_loop(sock, my_name)
+
+# ═══════════════════════════════════════════════════════════════
+#   ENTRY
+# ═══════════════════════════════════════════════════════════════
+
+def usage():
+    print(LOGO)
+    print(f"  {W}ctcc run{RST}          — open a room (you are host)")
+    print(f"  {W}ctcc join <IP>{RST}    — join a room\n")
+    sys.exit(0)
+
+if __name__ == '__main__':
+    args = sys.argv[1:]
+
+    if not args or args[0] in ('-h', '--help', 'help'):
+        usage()
+    elif args[0] == 'run':
+        run_host()
+    elif args[0] == 'join':
+        if len(args) < 2:
+            print(f"{R}Usage: ctcc join <HOST_IP>{RST}")
+            sys.exit(1)
+        run_join(args[1])
+    else:
+        print(f"{R}Unknown command: {args[0]}{RST}")
+        usage()
