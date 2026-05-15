@@ -1,6 +1,6 @@
 # CTCC Installer for Windows (compatible with PowerShell 4.0+)
-# Windows 8.1 users: download and right-click -> "Run with PowerShell"
-# Windows 10/11 users: Invoke-WebRequest -Uri https://abc6712.netlify.app/install.ps1 | iex
+# Windows 8/8.1: download and right-click -> "Run with PowerShell"
+# Windows 10/11: irm https://abc6712.netlify.app/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
@@ -28,7 +28,7 @@ if (-not $python) {
     $pyInstaller = "$env:TEMP\python_installer.exe"
     $pyUrl = "https://www.python.org/ftp/python/3.8.10/python-3.8.10-amd64.exe"
 
-    Write-Host "Downloading..." -ForegroundColor Cyan
+    Write-Host "Downloading Python..." -ForegroundColor Cyan
     Invoke-WebRequest -Uri $pyUrl -OutFile $pyInstaller -UseBasicParsing
 
     Write-Host "Installing Python silently..." -ForegroundColor Cyan
@@ -95,7 +95,8 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host " Done! Close and reopen your terminal." -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  ctcc run          - open a room"
-Write-Host "  ctcc join <IP>    - join a room"
+Write-Host "  ctcc server        - start the relay server"
+Write-Host "  ctcc connect       - connect via internet"
+Write-Host "  ctcc join <IP>     - connect via local network"
 Write-Host ""
 Read-Host "Press Enter to exit"
