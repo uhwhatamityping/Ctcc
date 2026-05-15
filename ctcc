@@ -308,6 +308,7 @@ def do_join(host, my_name):
     import getpass
     print(f"{C}** Connecting to {host}:{PORT}... **{RST}")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(15)
     try:
         sock.connect((host, PORT))
     except ConnectionRefusedError:
@@ -315,6 +316,12 @@ def do_join(host, my_name):
         sys.exit(1)
     except socket.gaierror:
         print(f"{R}** Could not resolve '{host}'. Check the address. **{RST}")
+        sys.exit(1)
+    except (TimeoutError, socket.timeout):
+        print(f"{R}** Connection timed out. The server may be offline or the port is blocked. **{RST}")
+        sys.exit(1)
+    except OSError as exc:
+        print(f"{R}** Network error: {exc} **{RST}")
         sys.exit(1)
 
     challenge = sock.recv(BUFFER)
@@ -331,6 +338,7 @@ def do_join(host, my_name):
         sys.exit(1)
 
     sock.sendall(f"NAME:{my_name}".encode())
+    sock.settimeout(None)
     print(f"{G}** Connected! Type messages below. /quit to leave. **{RST}\n")
 
     threading.Thread(target=client_recv_loop, args=(sock, my_name), daemon=True).start()
