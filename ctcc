@@ -230,7 +230,14 @@ def run_server():
     local_ip = get_local_ip()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(('', PORT))
+    try:
+        srv.bind(('', PORT))
+    except OSError as exc:
+        if exc.errno == 98:
+            print(f"{R}** Port {PORT} is already in use. Stop the other CTCC server (or any app on that port) and try again. **{RST}")
+        else:
+            print(f"{R}** Failed to bind to port {PORT}: {exc} **{RST}")
+        sys.exit(1)
     srv.listen(20)
 
     print(f"{G}** Server running on port {PORT} **{RST}")
