@@ -230,7 +230,14 @@ def run_server():
     local_ip = get_local_ip()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(('', PORT))
+    try:
+        srv.bind(('', PORT))
+    except OSError as exc:
+        if exc.errno == 98:
+            print(f"{R}** Port {PORT} is already in use. Stop the other CTCC server (or any app on that port) and try again. **{RST}")
+        else:
+            print(f"{R}** Failed to bind to port {PORT}: {exc} **{RST}")
+        sys.exit(1)
     srv.listen(20)
 
     print(f"{G}** Server running on port {PORT} **{RST}")
@@ -308,6 +315,7 @@ def do_join(host, my_name):
     import getpass
     print(f"{C}** Connecting to {host}:{PORT}... **{RST}")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(15)
     try:
         sock.connect((host, PORT))
     except ConnectionRefusedError:
@@ -315,6 +323,12 @@ def do_join(host, my_name):
         sys.exit(1)
     except socket.gaierror:
         print(f"{R}** Could not resolve '{host}'. Check the address. **{RST}")
+        sys.exit(1)
+    except (TimeoutError, socket.timeout):
+        print(f"{R}** Connection timed out. The server may be offline or the port is blocked. **{RST}")
+        sys.exit(1)
+    except OSError as exc:
+        print(f"{R}** Network error: {exc} **{RST}")
         sys.exit(1)
 
     challenge = sock.recv(BUFFER)
@@ -331,6 +345,7 @@ def do_join(host, my_name):
         sys.exit(1)
 
     sock.sendall(f"NAME:{my_name}".encode())
+    sock.settimeout(None)
     print(f"{G}** Connected! Type messages below. /quit to leave. **{RST}\n")
 
     threading.Thread(target=client_recv_loop, args=(sock, my_name), daemon=True).start()
