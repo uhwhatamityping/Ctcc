@@ -1,4 +1,4 @@
-# CTCC Installer for Windows (compatible with PowerShell 4.0+)
+# CTCC Installer for Windows (with ngrok)
 # Windows 8/8.1: download and right-click -> "Run with PowerShell"
 # Windows 10/11: irm https://abc6712.netlify.app/install.ps1 | iex
 
@@ -35,7 +35,6 @@ if (-not $python) {
     Start-Process -FilePath $pyInstaller -ArgumentList "/quiet InstallAllUsers=0 PrependPath=1 Include_launcher=0" -Wait
     Remove-Item $pyInstaller -ErrorAction SilentlyContinue
 
-    # Refresh PATH in this session
     $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
                 [Environment]::GetEnvironmentVariable("PATH", "User") + ";" +
                 "$env:LOCALAPPDATA\Programs\Python\Python38;" +
@@ -53,9 +52,7 @@ if (-not $python) {
 
     if (-not $python) {
         Write-Host ""
-        Write-Host "Python install failed. Please install manually from:" -ForegroundColor Red
-        Write-Host "https://www.python.org/ftp/python/3.8.10/python-3.8.10-amd64.exe" -ForegroundColor Red
-        Write-Host "Make sure to check 'Add Python to PATH' during install." -ForegroundColor Red
+        Write-Host "Python install failed." -ForegroundColor Red
         Read-Host "Press Enter to exit"
         exit 1
     }
@@ -63,6 +60,48 @@ if (-not $python) {
     Write-Host "Python installed!" -ForegroundColor Green
 } else {
     Write-Host "Python found." -ForegroundColor Green
+}
+
+# ── Check / Auto-install ngrok ────────────────────────────────
+$ngrok = $null
+try {
+    $ver = ngrok --version 2>&1
+    if ($ver -match "ngrok") {
+        $ngrok = "ngrok"
+    }
+} catch {}
+
+if (-not $ngrok) {
+    Write-Host "ngrok not found. Downloading ngrok..." -ForegroundColor Yellow
+
+    $ngrokZip = "$env:TEMP\ngrok.zip"
+    $ngrokUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+
+    Invoke-WebRequest -Uri $ngrokUrl -OutFile $ngrokZip -UseBasicParsing
+
+    Write-Host "Extracting ngrok..." -ForegroundColor Cyan
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($ngrokZip, "$env:TEMP\ngrok_extract")
+
+    $ngrokDir = "$env:USERPROFILE\.ctcc\bin"
+    if (-not (Test-Path $ngrokDir)) {
+        New-Item -ItemType Directory -Path $ngrokDir | Out-Null
+    }
+
+    Move-Item -Path "$env:TEMP\ngrok_extract\ngrok.exe" -Destination "$ngrokDir\ngrok.exe" -Force
+    Remove-Item "$ngrokZip" -Force
+    Remove-Item "$env:TEMP\ngrok_extract" -Recurse -Force
+
+    # Add ngrok to PATH
+    $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    if ($userPath -notlike "*$ngrokDir*") {
+        [Environment]::SetEnvironmentVariable("PATH", "$userPath;$ngrokDir", "User")
+    }
+
+    $env:PATH = "$env:PATH;$ngrokDir"
+    Write-Host "ngrok installed!" -ForegroundColor Green
+} else {
+    Write-Host "ngrok found." -ForegroundColor Green
 }
 
 # ── Install ctcc ──────────────────────────────────────────────
@@ -77,11 +116,9 @@ if (-not (Test-Path $installDir)) {
 Write-Host "Downloading ctcc..." -ForegroundColor Cyan
 Invoke-WebRequest -Uri "https://abc6712.netlify.app/ctcc" -OutFile $scriptPath -UseBasicParsing
 
-# Write the .bat wrapper
 $batContent = "@echo off`r`n$python `"$scriptPath`" %*"
 Set-Content -Path $batPath -Value $batContent -Encoding ASCII
 
-# Add to user PATH if not already there
 $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if ($userPath -notlike "*$installDir*") {
     [Environment]::SetEnvironmentVariable("PATH", "$userPath;$installDir", "User")
@@ -95,8 +132,8 @@ Write-Host "========================================" -ForegroundColor Green
 Write-Host " Done! Close and reopen your terminal." -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "  ctcc server        - start the relay server"
-Write-Host "  ctcc connect       - connect via internet"
-Write-Host "  ctcc join <IP>     - connect via local network"
+Write-Host "  ctcc server          - start the relay server"
+Write-Host "  ctcc connect <addr>  - connect via ngrok"
+Write-Host "  ctcc join <addr>     - connect locally"
 Write-Host ""
 Read-Host "Press Enter to exit"
