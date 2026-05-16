@@ -1,5 +1,5 @@
 #!/bin/sh
-# CTCC Installer for Linux/Mac/Android (Termux)
+# CTCC Installer for Linux/Mac (with ngrok)
 # Run with: curl -fsSL https://abc6712.netlify.app/install.sh | sh
 
 set -e
@@ -17,42 +17,34 @@ echo ""
 
 if ! command -v python3 >/dev/null 2>&1; then
   printf "${RED}Error: python3 is required but not found.\n${RST}"
-  if [ -n "$TERMUX_VERSION" ]; then
-    printf "${RED}Install it with: pkg install python\n${RST}"
-  else
-    printf "${RED}Install it from https://python.org\n${RST}"
-  fi
+  printf "${RED}Install it from https://python.org\n${RST}"
   exit 1
 fi
 
-# Pick install dir based on environment
-if [ -n "$TERMUX_VERSION" ]; then
-  # Termux — use its own bin dir, no root needed
-  DEST="$PREFIX/bin/ctcc"
-elif [ -w "/usr/local/bin" ]; then
-  # Already writable (no sudo needed)
-  DEST="/usr/local/bin/ctcc"
-else
-  # Standard Linux/Mac — need sudo
-  DEST="/usr/local/bin/ctcc"
-  USE_SUDO=1
+# Check for ngrok
+if ! command -v ngrok >/dev/null 2>&1; then
+  printf "${C}Installing ngrok...\n${RST}"
+  NGROK_URL="https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-$(uname -s)-$(uname -m).tgz"
+  TMP=$(mktemp)
+  curl -fsSL "$NGROK_URL" -o "$TMP"
+  tar xzf "$TMP" -C /tmp
+  sudo mv /tmp/ngrok /usr/local/bin/
+  rm "$TMP"
 fi
 
 TMP="$(mktemp)"
+DEST="/usr/local/bin/ctcc"
 
 printf "${C}Downloading ctcc...\n${RST}"
 curl -fsSL "https://abc6712.netlify.app/ctcc" -o "$TMP"
 chmod +x "$TMP"
 
 printf "${C}Installing to $DEST...\n${RST}"
-if [ "$USE_SUDO" = "1" ]; then
-  sudo mv "$TMP" "$DEST"
-else
-  mv "$TMP" "$DEST"
-fi
+sudo mv "$TMP" "$DEST"
 
 printf "${GREEN}Done! You can now run:\n${RST}"
 echo ""
-echo "  ctcc run           — open a room"
-echo "  ctcc join <IP>     — join a room"
+echo "  ctcc server           — start the relay server"
+echo "  ctcc connect <addr>   — connect via ngrok"
+echo "  ctcc join <addr>      — connect locally"
 echo ""
