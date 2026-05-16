@@ -14,8 +14,6 @@ import threading
 import sys
 import os
 import hashlib
-import subprocess
-import time
 from datetime import datetime
 
 # ── config ────────────────────────────────────────────────────
@@ -93,50 +91,6 @@ def chat_print(sender, text, color, my_name):
 
 def reprint_prompt(name):
     print(f"{C}{name}{RST} > ", end='', flush=True)
-
-# ═══════════════════════════════════════════════════════════════
-#   CLOUDFLARE TUNNEL
-# ═══════════════════════════════════════════════════════════════
-
-tunnel_process = None
-tunnel_url = None
-
-def start_cloudflare_tunnel():
-    """Start cloudflared tunnel."""
-    global tunnel_process, tunnel_url
-    try:
-        tunnel_process = subprocess.Popen(
-            ['cloudflared', 'tunnel', '--url', f'tcp://localhost:{PORT}'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-        
-        # Read output to get the tunnel URL
-        for _ in range(30):
-            line = tunnel_process.stdout.readline()
-            if line:
-                if 'https://' in line or 'tcp://' in line:
-                    # Extract URL from cloudflared output
-                    for part in line.split():
-                        if 'https://' in part or 'tcp://' in part:
-                            tunnel_url = part.strip()
-                            return tunnel_url
-            time.sleep(0.5)
-        
-        return None
-    except FileNotFoundError:
-        return None
-
-def stop_cloudflare_tunnel():
-    """Stop cloudflared tunnel."""
-    global tunnel_process
-    if tunnel_process:
-        try:
-            tunnel_process.terminate()
-            tunnel_process.wait(timeout=2)
-        except Exception:
-            pass
 
 # ═══════════════════════════════════════════════════════════════
 #   RELAY SERVER
@@ -255,20 +209,8 @@ def run_server():
     srv.listen(20)
 
     print(f"{G}** Server running on port {PORT} **{RST}")
-    print(f"{G}** Local:    {W}{local_ip}:{PORT}{RST}")
-    
-    print(f"{C}** Starting Cloudflare Tunnel... **{RST}")
-    tunnel = start_cloudflare_tunnel()
-    
-    if tunnel:
-        print(f"{G}** Internet: {W}{tunnel}{RST}")
-        print(f"{DIM}   Share this address with others:{RST}")
-        print(f"{Y}   ctcc connect {tunnel}{RST}")
-    else:
-        print(f"{R}** Cloudflare Tunnel failed to start. **{RST}")
-        print(f"{DIM}   Make sure cloudflared is installed and you're logged in:{RST}")
-        print(f"{Y}   cloudflared tunnel login{RST}")
-
+    print(f"{G}** Local IP: {W}{local_ip}:{PORT}{RST}")
+    print(f"{Y}   Share with others: ctcc join {local_ip}{RST}")
     print(f"{DIM}   Commands: /kick <name>  /list  /quit{RST}\n")
 
     def accept_loop():
@@ -389,28 +331,7 @@ def run_join(addr_str):
     
     do_join(host, port, my_name)
 
-def run_connect():
-    clear()
-    print(LOGO)
-    my_name = input("Your name: ").strip() or socket.gethostname()
-    print()
-    
-    print(f"{C}** Starting Cloudflare Tunnel... **{RST}")
-    tunnel = start_cloudflare_tunnel()
-    
-    if not tunnel:
-        print(f"{R}** Cloudflare Tunnel failed. **{RST}")
-        print(f"{Y}   First, log in with: cloudflared tunnel login{RST}")
-        sys.exit(1)
-    
-    # Extract host:port from tunnel URL
-    # cloudflared output format: https://abc123.trycloudflare.com
-    parts = tunnel.split('://')[-1].split(':')
-    host = parts[0]
-    port = int(parts[1]) if len(parts) > 1 else PORT
-    
-    print(f"{G}** Tunnel URL: {tunnel} **{RST}\n")
-    do_join(host, port, my_name)
+
 
 # ═══════════════════════════════════════════════════════════════
 #   ENTRY
@@ -419,8 +340,7 @@ def run_connect():
 def usage():
     print(LOGO)
     print(f"  {W}ctcc server{RST}            — start the relay server")
-    print(f"  {W}ctcc connect{RST}           — connect via Cloudflare Tunnel")
-    print(f"  {W}ctcc join <addr>{RST}       — connect (local or remote)\n")
+    print(f"  {W}ctcc join <addr>{RST}       — connect to a server\n")
     sys.exit(0)
 
 if __name__ == '__main__':
@@ -430,8 +350,6 @@ if __name__ == '__main__':
         usage()
     elif args[0] == 'server':
         run_server()
-    elif args[0] == 'connect':
-        run_connect()
     elif args[0] == 'join':
         if len(args) < 2:
             print(f"{R}Usage: ctcc join <address>{RST}")
