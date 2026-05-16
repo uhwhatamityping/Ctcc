@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 CTCC — Computer to Computer Communication
-Relay Server + DuckDNS auto-updater
+Relay Server + ngrok tunneling (no port forwarding needed)
 
 Usage:
-  ctcc server       — start the relay server (your machine)
-  ctcc connect      — connect via internet (ctccserver.duckdns.org)
+  ctcc server       — start the relay server (ngrok auto-tunnels)
+  ctcc connect <addr> — connect via ngrok tunnel
   ctcc join <IP>    — connect via local network
 """
 
@@ -14,17 +14,15 @@ import threading
 import sys
 import os
 import hashlib
-import urllib.request
+import subprocess
 import time
+import json
 from datetime import datetime
 
 # ── config ────────────────────────────────────────────────────
 PORT          = 5050
 BUFFER        = 4096
 PW_HASH       = "0fe01a211ae14008fd9bccac52a0317011d5af4f2331d0cdbe30d7e61a45f79c"
-DUCKDNS_TOKEN = "c84cf036-b3c1-4c51-a1a9-56d98b0b2f4a"
-DUCKDNS_SUB   = "ctccserver"
-PUBLIC_HOST   = "ctccserver.duckdns.org"
 
 # ── colours ──────────────────────────────────────────────────
 R   = '\033[1;31m'
@@ -98,24 +96,54 @@ def reprint_prompt(name):
     print(f"{C}{name}{RST} > ", end='', flush=True)
 
 # ═══════════════════════════════════════════════════════════════
-#   DUCKDNS AUTO-UPDATER
+#   NGROK TUNNEL
 # ═══════════════════════════════════════════════════════════════
 
-def update_duckdns():
-    url = f"https://www.duckdns.org/update?domains={DUCKDNS_SUB}&token={DUCKDNS_TOKEN}&ip="
-    try:
-        res = urllib.request.urlopen(url, timeout=10).read().decode().strip()
-        if res == "OK":
-            print(f"{DIM}[{ts()}]{RST} {G}** DuckDNS updated: {PUBLIC_HOST} **{RST}")
-        else:
-            print(f"{DIM}[{ts()}]{RST} {R}** DuckDNS update failed: {res} **{RST}")
-    except Exception as e:
-        print(f"{DIM}[{ts()}]{RST} {R}** DuckDNS error: {e} **{RST}")
+ngrok_process = None
 
-def duckdns_loop():
-    while True:
-        update_duckdns()
-        time.sleep(300)  # update every 5 minutes
+def get_ngrok_url():
+    """Poll ngrok API to get the public URL."""
+    for _ in range(30):  # try for 30 seconds
+        try:
+            import urllib.request
+            res = urllib.request.urlopen('http://127.0.0.1:4040/api/tunnels', timeout=2)
+            data = json.loads(res.read())
+            for tunnel in data.get('tunnels', []):
+                if tunnel.get('proto') == 'tcp':
+                    return tunnel.get('public_url')
+        except Exception:
+            pass
+        time.sleep(1)
+    return None
+
+def start_ngrok():
+    """Start ngrok tunnel."""
+    global ngrok_process
+    try:
+        ngrok_process = subprocess.Popen(
+            ['ngrok', 'tcp', f'localhost:{PORT}'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        time.sleep(2)
+        
+        url = get_ngrok_url()
+        if url:
+            return url.replace('tcp://', '')
+        else:
+            return None
+    except FileNotFoundError:
+        return None
+
+def stop_ngrok():
+    """Stop ngrok tunnel."""
+    global ngrok_process
+    if ngrok_process:
+        try:
+            ngrok_process.terminate()
+            ngrok_process.wait(timeout=2)
+        except Exception:
+            pass
 
 # ═══════════════════════════════════════════════════════════════
 #   RELAY SERVER
@@ -192,6 +220,7 @@ def server_command_loop():
         except (EOFError, KeyboardInterrupt):
             broadcast("SYS:Server is shutting down.")
             print(f"\n{Y}** Server shutting down. **{RST}")
+            stop_ngrok()
             os._exit(0)
 
         if cmd.startswith("/kick "):
@@ -215,6 +244,7 @@ def server_command_loop():
         elif cmd.strip() in ("/quit", "/q"):
             broadcast("SYS:Server is shutting down.")
             print(f"{Y}** Server shutting down. **{RST}")
+            stop_ngrok()
             os._exit(0)
 
         elif cmd.strip():
@@ -225,25 +255,27 @@ def run_server():
     print(LOGO)
     print(f"{Y}** Starting CTCC Relay Server **{RST}\n")
 
-    threading.Thread(target=duckdns_loop, daemon=True).start()
-
     local_ip = get_local_ip()
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    try:
-        srv.bind(('', PORT))
-    except OSError as exc:
-        if exc.errno == 98:
-            print(f"{R}** Port {PORT} is already in use. Stop the other CTCC server (or any app on that port) and try again. **{RST}")
-        else:
-            print(f"{R}** Failed to bind to port {PORT}: {exc} **{RST}")
-        sys.exit(1)
+    srv.bind(('', PORT))
     srv.listen(20)
 
     print(f"{G}** Server running on port {PORT} **{RST}")
     print(f"{G}** Local:    {W}{local_ip}:{PORT}{RST}")
-    print(f"{G}** Internet: {W}{PUBLIC_HOST}:{PORT}{RST}")
-    print(f"{DIM}   Make sure port {PORT} is forwarded on your router!{RST}")
+    
+    print(f"{C}** Starting ngrok tunnel... **{RST}")
+    ngrok_url = start_ngrok()
+    
+    if ngrok_url:
+        print(f"{G}** Internet: {W}{ngrok_url}{RST}")
+        print(f"{DIM}   Share this address with others:{RST}")
+        print(f"{Y}   ctcc connect {ngrok_url}{RST}")
+    else:
+        print(f"{R}** ngrok failed to start. Make sure it's installed. **{RST}")
+        print(f"{DIM}   Install with: ngrok config add-authtoken YOUR_TOKEN{RST}")
+        print(f"{DIM}   Or get a free account at https://ngrok.com{RST}")
+
     print(f"{DIM}   Commands: /kick <name>  /list  /quit{RST}\n")
 
     def accept_loop():
@@ -311,24 +343,18 @@ def client_send_loop(sock, my_name):
         print(f"\033[1A\r{DIM}[{ts()}]{RST} {C}{my_name}{RST}: {msg}")
         reprint_prompt(my_name)
 
-def do_join(host, my_name):
+def do_join(host, port, my_name):
     import getpass
-    print(f"{C}** Connecting to {host}:{PORT}... **{RST}")
+    addr = f"{host}:{port}"
+    print(f"{C}** Connecting to {addr}... **{RST}")
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(15)
     try:
-        sock.connect((host, PORT))
+        sock.connect((host, port))
     except ConnectionRefusedError:
         print(f"{R}** Could not connect. Is the server running? **{RST}")
         sys.exit(1)
     except socket.gaierror:
         print(f"{R}** Could not resolve '{host}'. Check the address. **{RST}")
-        sys.exit(1)
-    except (TimeoutError, socket.timeout):
-        print(f"{R}** Connection timed out. The server may be offline or the port is blocked. **{RST}")
-        sys.exit(1)
-    except OSError as exc:
-        print(f"{R}** Network error: {exc} **{RST}")
         sys.exit(1)
 
     challenge = sock.recv(BUFFER)
@@ -345,25 +371,30 @@ def do_join(host, my_name):
         sys.exit(1)
 
     sock.sendall(f"NAME:{my_name}".encode())
-    sock.settimeout(None)
     print(f"{G}** Connected! Type messages below. /quit to leave. **{RST}\n")
 
     threading.Thread(target=client_recv_loop, args=(sock, my_name), daemon=True).start()
     client_send_loop(sock, my_name)
 
-def run_join(host):
+def run_join(addr_str):
     clear()
     print(LOGO)
     my_name = input("Your name: ").strip() or socket.gethostname()
     print()
-    do_join(host, my_name)
-
-def run_connect():
-    clear()
-    print(LOGO)
-    my_name = input("Your name: ").strip() or socket.gethostname()
-    print()
-    do_join(PUBLIC_HOST, my_name)
+    
+    # Parse "host:port" or just "host"
+    if ':' in addr_str:
+        host, port_str = addr_str.rsplit(':', 1)
+        try:
+            port = int(port_str)
+        except ValueError:
+            print(f"{R}Invalid address format. Use 'host:port' or 'host'{RST}")
+            sys.exit(1)
+    else:
+        host = addr_str
+        port = PORT
+    
+    do_join(host, port, my_name)
 
 # ═══════════════════════════════════════════════════════════════
 #   ENTRY
@@ -372,8 +403,8 @@ def run_connect():
 def usage():
     print(LOGO)
     print(f"  {W}ctcc server{RST}            — start the relay server")
-    print(f"  {W}ctcc connect{RST}           — connect via internet")
-    print(f"  {W}ctcc join <IP>{RST}         — connect via local network\n")
+    print(f"  {W}ctcc connect <addr>{RST}    — connect via ngrok tunnel")
+    print(f"  {W}ctcc join <addr>{RST}       — connect (local or remote)\n")
     sys.exit(0)
 
 if __name__ == '__main__':
@@ -383,11 +414,9 @@ if __name__ == '__main__':
         usage()
     elif args[0] == 'server':
         run_server()
-    elif args[0] == 'connect':
-        run_connect()
-    elif args[0] == 'join':
+    elif args[0] in ('connect', 'join'):
         if len(args) < 2:
-            print(f"{R}Usage: ctcc join <IP>{RST}")
+            print(f"{R}Usage: ctcc {args[0]} <address>{RST}")
             sys.exit(1)
         run_join(args[1])
     else:
